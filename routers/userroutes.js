@@ -1,8 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
-const { authenticateToken, authorizeRoles } = require("../middleware/auth");
-const { userValidationRules, validate } = require("../middleware/validation");
+const { authenticateToken, authorizeRoles } = require("../src/middleware/auth");
+const {
+  userValidationRules,
+  validate,
+} = require("../src/middleware/validation");
 
 // All routes require authentication
 router.use(authenticateToken);
@@ -38,5 +41,8 @@ router.patch(
   authorizeRoles("Admin"),
   userController.toggleUserStatus
 );
+
+// Delete user (Admin only) - ADD THIS ROUTE
+router.delete("/:id", authorizeRoles("Admin"), userController.deleteUser);
 
 module.exports = router;

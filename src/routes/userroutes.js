@@ -39,4 +39,16 @@ router.patch(
   userController.toggleUserStatus
 );
 
+// Add to userRoutes.js
+
+// Delete user (Admin only)
+router.delete("/:id", authorizeRoles("Admin"), userController.deleteUser);
+
+// Reset user password (Admin only)
+router.post(
+  "/:id/reset-password",
+  authorizeRoles("Admin"),
+  userController.resetUserPassword
+);
+
 module.exports = router;

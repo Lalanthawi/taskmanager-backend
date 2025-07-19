@@ -220,6 +220,76 @@ const getElectricians = async (req, res) => {
   }
 };
 
+// Delete user
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Don't allow deleting the last admin
+    const [admins] = await db.query(
+      'SELECT COUNT(*) as count FROM users WHERE role = "Admin" AND status = "Active"'
+    );
+
+    const [userToDelete] = await db.query(
+      "SELECT role FROM users WHERE id = ?",
+      [id]
+    );
+
+    if (userToDelete[0]?.role === "Admin" && admins[0].count <= 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete the last admin user",
+      });
+    }
+
+    // Delete user (soft delete - just mark as deleted)
+    await db.query('UPDATE users SET status = "Deleted" WHERE id = ?', [id]);
+
+    res.json({
+      success: true,
+      message: "User deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete user error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Reset user password
+const resetUserPassword = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(
+      newPassword,
+      parseInt(process.env.SALT_ROUNDS)
+    );
+
+    // Update password
+    await db.query("UPDATE users SET password = ? WHERE id = ?", [
+      hashedPassword,
+      id,
+    ]);
+
+    // Log activity
+    await db.query(
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [req.user.id, "Password Reset", `Reset password for user ID: ${id}`]
+    );
+
+    res.json({
+      success: true,
+      message: "Password reset successfully",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ✅ SINGLE module.exports with ALL functions
 module.exports = {
   getAllUsers,
   getUserById,
@@ -227,4 +297,6 @@ module.exports = {
   updateUser,
   toggleUserStatus,
   getElectricians,
+  deleteUser, // ← Now properly exported
+  resetUserPassword, // ← Bonus function also exported
 };
