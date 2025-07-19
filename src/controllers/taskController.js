@@ -1,6 +1,6 @@
 const db = require("../config/database");
 
-// Get all tasks
+// Get all tasks with date filter support
 const getAllTasks = async (req, res) => {
   try {
     const { status, date, electrician_id } = req.query;
@@ -57,7 +57,11 @@ const getAllTasks = async (req, res) => {
     });
   } catch (error) {
     console.error("Get tasks error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error fetching tasks",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 
@@ -79,7 +83,10 @@ const getTaskById = async (req, res) => {
     );
 
     if (tasks.length === 0) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
     }
 
     // Get materials
@@ -97,7 +104,10 @@ const getTaskById = async (req, res) => {
     });
   } catch (error) {
     console.error("Get task error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error fetching task",
+    });
   }
 };
 
@@ -196,7 +206,10 @@ const createTask = async (req, res) => {
   } catch (error) {
     await connection.rollback();
     console.error("Create task error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error creating task",
+    });
   } finally {
     connection.release();
   }
@@ -215,9 +228,10 @@ const assignTask = async (req, res) => {
     );
 
     if (electrician.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "Invalid or inactive electrician" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or inactive electrician",
+      });
     }
 
     // Update task
@@ -243,7 +257,10 @@ const assignTask = async (req, res) => {
     });
   } catch (error) {
     console.error("Assign task error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error assigning task",
+    });
   }
 };
 
@@ -252,6 +269,21 @@ const updateTaskStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
+
+    // Validate status
+    const validStatuses = [
+      "Pending",
+      "Assigned",
+      "In Progress",
+      "Completed",
+      "Cancelled",
+    ];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status value",
+      });
+    }
 
     let updateQuery = "UPDATE tasks SET status = ?";
     const params = [status];
@@ -265,7 +297,14 @@ const updateTaskStatus = async (req, res) => {
     updateQuery += " WHERE id = ?";
     params.push(id);
 
-    await db.query(updateQuery, params);
+    const [result] = await db.query(updateQuery, params);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
 
     // Log activity
     await db.query(
@@ -283,11 +322,14 @@ const updateTaskStatus = async (req, res) => {
     });
   } catch (error) {
     console.error("Update status error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error updating task status",
+    });
   }
 };
 
-// Complete task
+// Complete task with details
 const completeTask = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -297,27 +339,76 @@ const completeTask = async (req, res) => {
     const { id } = req.params;
     const { completion_notes, materials_used, additional_charges } = req.body;
 
+    // Check if task exists and belongs to the user (if electrician)
+    const [taskCheck] = await connection.query(
+      "SELECT assigned_to, status FROM tasks WHERE id = ?",
+      [id]
+    );
+
+    if (taskCheck.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
+
+    // If electrician, verify they're assigned to this task
+    if (
+      req.user.role === "Electrician" &&
+      taskCheck[0].assigned_to !== req.user.id
+    ) {
+      await connection.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "You are not assigned to this task",
+      });
+    }
+
     // Update task status
     await connection.query(
       'UPDATE tasks SET status = "Completed", actual_end_time = NOW() WHERE id = ?',
       [id]
     );
 
-    // Add completion details
-    await connection.query(
-      `INSERT INTO task_completions 
-       (task_id, completion_notes, materials_used, additional_charges)
-       VALUES (?, ?, ?, ?)`,
-      [id, completion_notes, materials_used, additional_charges || 0]
+    // Check if completion record already exists
+    const [existingCompletion] = await connection.query(
+      "SELECT id FROM task_completions WHERE task_id = ?",
+      [id]
     );
 
+    if (existingCompletion.length > 0) {
+      // Update existing completion record
+      await connection.query(
+        `UPDATE task_completions 
+         SET completion_notes = ?, materials_used = ?, additional_charges = ?, completed_at = NOW()
+         WHERE task_id = ?`,
+        [completion_notes, materials_used, additional_charges || 0, id]
+      );
+    } else {
+      // Add new completion details
+      await connection.query(
+        `INSERT INTO task_completions 
+         (task_id, completion_notes, materials_used, additional_charges)
+         VALUES (?, ?, ?, ?)`,
+        [id, completion_notes, materials_used, additional_charges || 0]
+      );
+    }
+
     // Update electrician's completed tasks count
+    if (req.user.role === "Electrician") {
+      await connection.query(
+        `UPDATE electrician_details 
+         SET total_tasks_completed = total_tasks_completed + 1
+         WHERE electrician_id = ?`,
+        [req.user.id]
+      );
+    }
+
+    // Log activity
     await connection.query(
-      `UPDATE electrician_details ed
-       JOIN tasks t ON t.assigned_to = ed.electrician_id
-       SET ed.total_tasks_completed = ed.total_tasks_completed + 1
-       WHERE t.id = ?`,
-      [id]
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [req.user.id, "Task Completed", `Completed task ${id}`]
     );
 
     await connection.commit();
@@ -329,7 +420,10 @@ const completeTask = async (req, res) => {
   } catch (error) {
     await connection.rollback();
     console.error("Complete task error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error completing task",
+    });
   } finally {
     connection.release();
   }
@@ -341,11 +435,33 @@ const addTaskRating = async (req, res) => {
     const { id } = req.params;
     const { rating, feedback } = req.body;
 
-    // Add rating
-    await db.query(
-      "INSERT INTO task_ratings (task_id, rating, feedback) VALUES (?, ?, ?)",
-      [id, rating, feedback]
+    // Validate rating
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Rating must be between 1 and 5",
+      });
+    }
+
+    // Check if rating already exists
+    const [existingRating] = await db.query(
+      "SELECT id FROM task_ratings WHERE task_id = ?",
+      [id]
     );
+
+    if (existingRating.length > 0) {
+      // Update existing rating
+      await db.query(
+        "UPDATE task_ratings SET rating = ?, feedback = ?, rated_at = NOW() WHERE task_id = ?",
+        [rating, feedback, id]
+      );
+    } else {
+      // Add new rating
+      await db.query(
+        "INSERT INTO task_ratings (task_id, rating, feedback) VALUES (?, ?, ?)",
+        [id, rating, feedback]
+      );
+    }
 
     // Update electrician's average rating
     await db.query(
@@ -367,7 +483,10 @@ const addTaskRating = async (req, res) => {
     });
   } catch (error) {
     console.error("Add rating error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Server error adding rating",
+    });
   }
 };
 
