@@ -103,7 +103,7 @@ const createUser = async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(
       password,
-      parseInt(process.env.SALT_ROUNDS)
+      parseInt(process.env.SALT_ROUNDS || 10)
     );
 
     // Insert user
@@ -149,22 +149,200 @@ const createUser = async (req, res) => {
 
 // Update user
 const updateUser = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { full_name, phone, status } = req.body;
+  const connection = await db.getConnection();
 
-    await db.query(
+  try {
+    await connection.beginTransaction();
+
+    const { id } = req.params;
+    const { full_name, phone, status, skills, certifications } = req.body;
+
+    // Clean phone number
+    const cleanPhone = phone ? phone.replace(/[\s-]/g, "") : "";
+
+    // Update user basic info
+    await connection.query(
       "UPDATE users SET full_name = ?, phone = ?, status = ? WHERE id = ?",
-      [full_name, phone, status, id]
+      [full_name, cleanPhone, status, id]
     );
+
+    // Check if user is an electrician and update electrician details
+    const [userRole] = await connection.query(
+      "SELECT role FROM users WHERE id = ?",
+      [id]
+    );
+
+    if (userRole[0].role === "Electrician") {
+      // Check if electrician details exist
+      const [existingDetails] = await connection.query(
+        "SELECT electrician_id FROM electrician_details WHERE electrician_id = ?",
+        [id]
+      );
+
+      if (existingDetails.length > 0) {
+        // Update existing electrician details
+        await connection.query(
+          "UPDATE electrician_details SET skills = ?, certifications = ? WHERE electrician_id = ?",
+          [skills || "", certifications || "", id]
+        );
+      } else {
+        // Insert new electrician details if they don't exist
+        await connection.query(
+          "INSERT INTO electrician_details (electrician_id, skills, certifications, join_date) VALUES (?, ?, ?, CURDATE())",
+          [id, skills || "", certifications || ""]
+        );
+      }
+    }
+
+    // Log activity
+    await connection.query(
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [req.user.id, "Update User", `Updated user: ${full_name}`]
+    );
+
+    await connection.commit();
 
     res.json({
       success: true,
       message: "User updated successfully",
     });
   } catch (error) {
+    await connection.rollback();
     console.error("Update user error:", error);
     res.status(500).json({ message: "Server error" });
+  } finally {
+    connection.release();
+  }
+};
+
+// Delete user
+const deleteUser = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { id } = req.params;
+
+    // Check if user exists
+    const [user] = await connection.query(
+      "SELECT full_name, role FROM users WHERE id = ?",
+      [id]
+    );
+
+    if (user.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Don't allow deleting the last admin
+    if (user[0].role === "Admin") {
+      const [[adminCount]] = await connection.query(
+        "SELECT COUNT(*) as count FROM users WHERE role = 'Admin' AND status = 'Active'"
+      );
+
+      if (adminCount.count <= 1) {
+        await connection.rollback();
+        return res
+          .status(400)
+          .json({ message: "Cannot delete the last admin user" });
+      }
+    }
+
+    // Don't allow deleting yourself
+    if (parseInt(id) === req.user.id) {
+      await connection.rollback();
+      return res
+        .status(400)
+        .json({ message: "Cannot delete your own account" });
+    }
+
+    // Delete related records first
+    try {
+      // Delete from electrician_details if user is an electrician
+      if (user[0].role === "Electrician") {
+        await connection.query(
+          "DELETE FROM electrician_details WHERE electrician_id = ?",
+          [id]
+        );
+      }
+
+      // Delete notifications
+      await connection.query("DELETE FROM notifications WHERE user_id = ?", [
+        id,
+      ]);
+
+      // Delete task completions and ratings for tasks assigned to this user
+      await connection.query(
+        "DELETE tc FROM task_completions tc JOIN tasks t ON tc.task_id = t.id WHERE t.assigned_to = ?",
+        [id]
+      );
+
+      await connection.query(
+        "DELETE tr FROM task_ratings tr JOIN tasks t ON tr.task_id = t.id WHERE t.assigned_to = ?",
+        [id]
+      );
+
+      // Update tasks - set assigned_to to NULL instead of deleting
+      await connection.query(
+        "UPDATE tasks SET assigned_to = NULL WHERE assigned_to = ?",
+        [id]
+      );
+
+      // Update tasks created by this user to system user or admin
+      const [[firstAdmin]] = await connection.query(
+        "SELECT id FROM users WHERE role = 'Admin' AND id != ? LIMIT 1",
+        [id]
+      );
+
+      if (firstAdmin) {
+        await connection.query(
+          "UPDATE tasks SET created_by = ? WHERE created_by = ?",
+          [firstAdmin.id, id]
+        );
+      }
+
+      // Delete activity logs for this user
+      await connection.query("DELETE FROM activity_logs WHERE user_id = ?", [
+        id,
+      ]);
+
+      // Finally, delete the user
+      await connection.query("DELETE FROM users WHERE id = ?", [id]);
+
+      // Log activity
+      await connection.query(
+        "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+        [req.user.id, "Delete User", `Deleted user: ${user[0].full_name}`]
+      );
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "User deleted successfully",
+      });
+    } catch (deleteError) {
+      console.error("Error during deletion:", deleteError);
+      throw deleteError;
+    }
+  } catch (error) {
+    await connection.rollback();
+    console.error("Delete user error:", error);
+
+    // Check for foreign key constraint error
+    if (error.code === "ER_ROW_IS_REFERENCED_2") {
+      res.status(400).json({
+        message:
+          "Cannot delete user. User has associated records in the system.",
+      });
+    } else {
+      res.status(500).json({
+        message: "Server error while deleting user. Please try again.",
+      });
+    }
+  } finally {
+    connection.release();
   }
 };
 
@@ -184,6 +362,16 @@ const toggleUserStatus = async (req, res) => {
     const newStatus = users[0].status === "Active" ? "Inactive" : "Active";
 
     await db.query("UPDATE users SET status = ? WHERE id = ?", [newStatus, id]);
+
+    // Log activity
+    await db.query(
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [
+        req.user.id,
+        "User Status Update",
+        `User ${newStatus === "Active" ? "activated" : "deactivated"}`,
+      ]
+    );
 
     res.json({
       success: true,
@@ -220,83 +408,12 @@ const getElectricians = async (req, res) => {
   }
 };
 
-// Delete user
-const deleteUser = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Don't allow deleting the last admin
-    const [admins] = await db.query(
-      'SELECT COUNT(*) as count FROM users WHERE role = "Admin" AND status = "Active"'
-    );
-
-    const [userToDelete] = await db.query(
-      "SELECT role FROM users WHERE id = ?",
-      [id]
-    );
-
-    if (userToDelete[0]?.role === "Admin" && admins[0].count <= 1) {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot delete the last admin user",
-      });
-    }
-
-    // Delete user (soft delete - just mark as deleted)
-    await db.query('UPDATE users SET status = "Deleted" WHERE id = ?', [id]);
-
-    res.json({
-      success: true,
-      message: "User deleted successfully",
-    });
-  } catch (error) {
-    console.error("Delete user error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// Reset user password
-const resetUserPassword = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { newPassword } = req.body;
-
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(
-      newPassword,
-      parseInt(process.env.SALT_ROUNDS)
-    );
-
-    // Update password
-    await db.query("UPDATE users SET password = ? WHERE id = ?", [
-      hashedPassword,
-      id,
-    ]);
-
-    // Log activity
-    await db.query(
-      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
-      [req.user.id, "Password Reset", `Reset password for user ID: ${id}`]
-    );
-
-    res.json({
-      success: true,
-      message: "Password reset successfully",
-    });
-  } catch (error) {
-    console.error("Reset password error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// ✅ SINGLE module.exports with ALL functions
 module.exports = {
   getAllUsers,
   getUserById,
   createUser,
   updateUser,
+  deleteUser,
   toggleUserStatus,
   getElectricians,
-  deleteUser, // ← Now properly exported
-  resetUserPassword, // ← Bonus function also exported
 };

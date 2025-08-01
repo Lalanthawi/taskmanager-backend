@@ -9,16 +9,48 @@ const validate = (req, res, next) => {
   next();
 };
 
+// Sri Lankan phone number validator
+const isSriLankanPhone = (value) => {
+  if (!value) return false;
+
+  // Remove spaces and dashes
+  const cleanPhone = value.replace(/[\s-]/g, "");
+
+  // Sri Lankan phone number patterns:
+  // +94XXXXXXXXX (with country code)
+  // 0XXXXXXXXX (without country code)
+  // Mobile numbers start with 07 or +947
+  const sriLankanPhoneRegex = /^(?:\+94|0)?7[0-9]{8}$/;
+
+  return sriLankanPhoneRegex.test(cleanPhone);
+};
+
 // User validation rules
 const userValidationRules = () => {
   return [
-    body("email").isEmail().normalizeEmail(),
+    body("email")
+      .isEmail()
+      .normalizeEmail()
+      .withMessage("Invalid email format"),
     body("password")
+      .optional({ nullable: true })
       .isLength({ min: 6 })
       .withMessage("Password must be at least 6 characters"),
-    body("full_name").notEmpty().trim().escape(),
-    body("phone").optional().isMobilePhone(),
-    body("role").isIn(["Admin", "Manager", "Electrician"]),
+    body("full_name")
+      .notEmpty()
+      .trim()
+      .escape()
+      .withMessage("Full name is required"),
+    body("phone")
+      .notEmpty()
+      .withMessage("Phone number is required")
+      .custom(isSriLankanPhone)
+      .withMessage(
+        "Please enter a valid Sri Lankan mobile number (07X XXX XXXX)"
+      ),
+    body("role")
+      .isIn(["Admin", "Manager", "Electrician"])
+      .withMessage("Invalid role"),
   ];
 };
 

@@ -7,7 +7,7 @@ const getDashboardStats = async (req, res) => {
     let stats = {};
 
     if (role === "Admin") {
-      // Admin statistics - no changes needed
+      // Admin statistics
       const [[users]] = await db.query(
         'SELECT COUNT(*) as totalUsers FROM users WHERE status = "Active"'
       );
@@ -37,38 +37,29 @@ const getDashboardStats = async (req, res) => {
         ...tasks,
       };
     } else if (role === "Manager") {
-      // Manager statistics - UPDATED
-      const today = new Date().toISOString().split("T")[0];
-
-      // Get ALL tasks statistics (not just today)
-      const [allTaskStats] = await db.query(
+      // Manager statistics
+      const [[todayTasks]] = await db.query(
         `SELECT 
           COUNT(*) as totalTasks,
           SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed,
           SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as inProgress,
-          SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending
-        FROM tasks`
-      );
-
-      // Get today's assigned tasks count
-      const [[todayAssigned]] = await db.query(
-        `SELECT COUNT(*) as assignedToday 
-         FROM tasks 
-         WHERE DATE(created_at) = ?`,
-        [today]
+          SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN status = 'Assigned' THEN 1 ELSE 0 END) as assigned
+        FROM tasks 
+        WHERE DATE(scheduled_date) = CURDATE()`
       );
 
       const [[teamStats]] = await db.query(
         `SELECT 
-          COUNT(DISTINCT u.id) as teamSize,
-          SUM(CASE WHEN u.status = 'Active' THEN 1 ELSE 0 END) as activeElectricians
+         COUNT(DISTINCT u.id) as teamSize,
+         SUM(CASE WHEN u.status = 'Active' THEN 1 ELSE 0 END) as activeElectricians
         FROM users u
         WHERE u.role = 'Electrician'`
       );
 
       const [[avgTime]] = await db.query(
         `SELECT 
-          AVG(TIMESTAMPDIFF(HOUR, actual_start_time, actual_end_time)) as avgCompletionTime
+         AVG(TIMESTAMPDIFF(HOUR, actual_start_time, actual_end_time)) as avgCompletionTime
         FROM tasks 
         WHERE status = 'Completed' 
         AND actual_start_time IS NOT NULL 
@@ -76,23 +67,18 @@ const getDashboardStats = async (req, res) => {
       );
 
       stats = {
-        totalTasks: allTaskStats[0].totalTasks || 0,
-        completed: allTaskStats[0].completed || 0,
-        inProgress: allTaskStats[0].inProgress || 0,
-        pending: allTaskStats[0].pending || 0,
-        assignedToday: todayAssigned.assignedToday || 0,
-        teamSize: teamStats.teamSize || 0,
-        activeElectricians: teamStats.activeElectricians || 0,
-        avgCompletionTime: Math.round(avgTime.avgCompletionTime || 0),
+        ...todayTasks,
+        ...teamStats,
+        avgCompletionTime: avgTime.avgCompletionTime || 0,
+        assignedToday: todayTasks.totalTasks,
       };
     } else if (role === "Electrician") {
-      // Electrician statistics - no changes needed
+      // Electrician statistics
       const [[todayStats]] = await db.query(
         `SELECT 
-          COUNT(*) as todayTasks,
-          SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completedToday,
-          SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as inProgress,
-          SUM(CASE WHEN status IN ('Pending', 'Assigned') THEN 1 ELSE 0 END) as pendingToday
+         COUNT(*) as todayTasks,
+         SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completedToday,
+         SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as inProgress
         FROM tasks 
         WHERE assigned_to = ? AND DATE(scheduled_date) = CURDATE()`,
         [id]
@@ -100,8 +86,8 @@ const getDashboardStats = async (req, res) => {
 
       const [[monthStats]] = await db.query(
         `SELECT 
-          COUNT(*) as thisMonth,
-          SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completedThisMonth
+         COUNT(*) as thisMonth,
+         SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completedThisMonth
         FROM tasks 
         WHERE assigned_to = ? 
         AND MONTH(scheduled_date) = MONTH(CURRENT_DATE())
@@ -109,45 +95,30 @@ const getDashboardStats = async (req, res) => {
         [id]
       );
 
-      const [[totalStats]] = await db.query(
-        `SELECT 
-          COUNT(CASE WHEN status = 'Completed' THEN 1 END) as totalCompleted
-        FROM tasks 
-        WHERE assigned_to = ?`,
-        [id]
-      );
-
-      // Get performance stats from electrician_details
       const [[performanceStats]] = await db.query(
         `SELECT 
-          COALESCE(ed.rating, 0) as avgRating,
-          COALESCE(ed.total_tasks_completed, 0) as totalCompleted,
-          COALESCE(
-            ROUND(
-              (SELECT COUNT(*) FROM tasks 
-               WHERE assigned_to = ? 
-               AND status = 'Completed' 
-               AND actual_end_time <= CONCAT(scheduled_date, ' ', scheduled_time_end)) * 100.0 / 
-              NULLIF((SELECT COUNT(*) FROM tasks WHERE assigned_to = ? AND status = 'Completed'), 0), 
-            2), 
-            100
-          ) as onTimeRate
-        FROM users u
-        LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
-        WHERE u.id = ?`,
+         ed.rating as avgRating,
+         ed.total_tasks_completed as totalCompleted,
+         ROUND((SELECT COUNT(*) FROM tasks 
+                WHERE assigned_to = ? 
+                AND status = 'Completed' 
+                AND actual_end_time <= CONCAT(scheduled_date, ' ', scheduled_time_end)) * 100.0 / 
+               NULLIF((SELECT COUNT(*) FROM tasks 
+                       WHERE assigned_to = ? 
+                       AND status = 'Completed'), 0), 2) as onTimeRate
+        FROM electrician_details ed
+        WHERE ed.electrician_id = ?`,
         [id, id, id]
       );
 
       stats = {
-        todayTasks: todayStats.todayTasks || 0,
-        completedToday: todayStats.completedToday || 0,
-        inProgress: todayStats.inProgress || 0,
-        pendingToday: todayStats.pendingToday || 0,
-        thisMonth: monthStats.thisMonth || 0,
-        completedThisMonth: monthStats.completedThisMonth || 0,
-        totalCompleted: totalStats.totalCompleted || 0,
-        avgRating: performanceStats[0]?.avgRating || 0,
-        onTimeRate: performanceStats[0]?.onTimeRate || 100,
+        ...todayStats,
+        ...monthStats,
+        ...performanceStats[0],
+        pendingToday:
+          todayStats.todayTasks -
+          todayStats.completedToday -
+          todayStats.inProgress,
       };
     }
 
@@ -157,11 +128,7 @@ const getDashboardStats = async (req, res) => {
     });
   } catch (error) {
     console.error("Dashboard stats error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error fetching dashboard statistics",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -170,10 +137,10 @@ const getRecentActivities = async (req, res) => {
   try {
     const { role, id } = req.user;
     let query = `
-      SELECT al.*, u.full_name as user_name
-      FROM activity_logs al
-      JOIN users u ON al.user_id = u.id
-    `;
+     SELECT al.*, u.full_name as user_name
+     FROM activity_logs al
+     JOIN users u ON al.user_id = u.id
+   `;
 
     const params = [];
 
@@ -192,10 +159,7 @@ const getRecentActivities = async (req, res) => {
     });
   } catch (error) {
     console.error("Recent activities error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error fetching activities",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -206,9 +170,9 @@ const getNotifications = async (req, res) => {
 
     const [notifications] = await db.query(
       `SELECT * FROM notifications 
-       WHERE user_id = ? 
-       ORDER BY created_at DESC 
-       LIMIT 10`,
+      WHERE user_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT 10`,
       [userId]
     );
 
@@ -218,10 +182,7 @@ const getNotifications = async (req, res) => {
     });
   } catch (error) {
     console.error("Get notifications error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error fetching notifications",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -242,10 +203,7 @@ const markNotificationRead = async (req, res) => {
     });
   } catch (error) {
     console.error("Mark notification error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error updating notification",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -258,59 +216,77 @@ const generateReport = async (req, res) => {
     let reportData = {};
 
     switch (report_type) {
-      case "user_performance":
-        const [performance] = await db.query(
+      case "system_usage":
+        // Get all users with their status
+        const [userStats] = await db.query(
           `SELECT 
+            u.id,
             u.full_name,
-            ed.employee_code,
-            COUNT(t.id) as total_tasks,
-            SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) as completed_tasks,
-            AVG(tr.rating) as avg_rating,
-            ed.rating as overall_rating
-           FROM users u
-           JOIN electrician_details ed ON u.id = ed.electrician_id
-           LEFT JOIN tasks t ON u.id = t.assigned_to 
-                            AND t.scheduled_date BETWEEN ? AND ?
-           LEFT JOIN task_ratings tr ON t.id = tr.task_id
-           WHERE u.role = 'Electrician'
-           GROUP BY u.id`,
-          [start_date, end_date]
+            u.email,
+            u.role,
+            u.status,
+            u.created_at,
+            u.last_login
+          FROM users u
+          ORDER BY u.role, u.full_name`
         );
-        reportData = { performance };
+
+        // Get login activities for the last 30 days
+        const [loginActivity] = await db.query(
+          `SELECT 
+            al.id,
+            al.user_id,
+            al.created_at,
+            al.ip_address,
+            u.full_name as user_name,
+            u.role
+          FROM activity_logs al
+          JOIN users u ON al.user_id = u.id
+          WHERE al.action = 'Login' 
+          AND al.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+          ORDER BY al.created_at DESC
+          LIMIT 100`
+        );
+
+        // Get account activity summary for this month
+        const [[newRegistrations]] = await db.query(
+          `SELECT COUNT(*) as count 
+          FROM users 
+          WHERE MONTH(created_at) = MONTH(CURRENT_DATE())
+          AND YEAR(created_at) = YEAR(CURRENT_DATE())`
+        );
+
+        const [[passwordResets]] = await db.query(
+          `SELECT COUNT(*) as count 
+          FROM activity_logs 
+          WHERE action = 'Password Reset'
+          AND MONTH(created_at) = MONTH(CURRENT_DATE())
+          AND YEAR(created_at) = YEAR(CURRENT_DATE())`
+        );
+
+        const [[deletedUsers]] = await db.query(
+          `SELECT COUNT(*) as count 
+          FROM activity_logs 
+          WHERE (action = 'Delete User' OR action LIKE '%Deleted user%')
+          AND MONTH(created_at) = MONTH(CURRENT_DATE())
+          AND YEAR(created_at) = YEAR(CURRENT_DATE())`
+        );
+
+        reportData = {
+          userStats,
+          loginActivity,
+          accountActivity: {
+            newRegistrations: newRegistrations.count,
+            passwordResets: passwordResets.count,
+            deletedUsers: deletedUsers.count,
+          },
+        };
         break;
 
-      case "task_analytics":
-        const [analytics] = await db.query(
-          `SELECT 
-            COUNT(*) as total_tasks,
-            SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed,
-            SUM(CASE WHEN status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled,
-            AVG(TIMESTAMPDIFF(HOUR, actual_start_time, actual_end_time)) as avg_duration,
-            SUM(CASE WHEN priority = 'High' THEN 1 ELSE 0 END) as high_priority,
-            SUM(CASE WHEN priority = 'Medium' THEN 1 ELSE 0 END) as medium_priority,
-            SUM(CASE WHEN priority = 'Low' THEN 1 ELSE 0 END) as low_priority
-           FROM tasks
-           WHERE scheduled_date BETWEEN ? AND ?`,
-          [start_date, end_date]
-        );
-        reportData = { analytics: analytics[0] };
-        break;
-
-      case "customer_satisfaction":
-        const [satisfaction] = await db.query(
-          `SELECT 
-            AVG(tr.rating) as avg_rating,
-            COUNT(tr.id) as total_ratings,
-            SUM(CASE WHEN tr.rating = 5 THEN 1 ELSE 0 END) as five_star,
-            SUM(CASE WHEN tr.rating = 4 THEN 1 ELSE 0 END) as four_star,
-            SUM(CASE WHEN tr.rating <= 3 THEN 1 ELSE 0 END) as three_or_below
-           FROM task_ratings tr
-           JOIN tasks t ON tr.task_id = t.id
-           WHERE t.scheduled_date BETWEEN ? AND ?`,
-          [start_date, end_date]
-        );
-        reportData = { satisfaction: satisfaction[0] };
-        break;
+      default:
+        return res.status(400).json({
+          message: "Invalid report type. Only system_usage is supported.",
+        });
     }
 
     // Log report generation
@@ -325,10 +301,7 @@ const generateReport = async (req, res) => {
     });
   } catch (error) {
     console.error("Generate report error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error generating report",
-    });
+    res.status(500).json({ message: "Server error" });
   }
 };
 

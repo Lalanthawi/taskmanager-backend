@@ -1,8 +1,7 @@
-// test-flow.js
 const axios = require("axios");
 
 async function testFlow() {
-  const API = "http://localhost:5000/api";
+  const API = "http://localhost:5001/api";
 
   try {
     // 1. Login
