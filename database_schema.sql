@@ -130,6 +130,27 @@ CREATE TABLE notifications (
     INDEX idx_user_unread (user_id, is_read)
 );
 
+-- Issues Table
+CREATE TABLE IF NOT EXISTS issues (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    task_id INT NOT NULL,
+    reported_by INT NOT NULL,
+    issue_type VARCHAR(50),
+    description TEXT,
+    priority ENUM('normal', 'urgent', 'emergency') DEFAULT 'normal',
+    status ENUM('open', 'in_progress', 'resolved') DEFAULT 'open',
+    requested_action VARCHAR(100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP NULL,
+    resolved_by INT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id),
+    FOREIGN KEY (reported_by) REFERENCES users(id),
+    FOREIGN KEY (resolved_by) REFERENCES users(id),
+    INDEX idx_status (status),
+    INDEX idx_priority (priority),
+    INDEX idx_task_id (task_id)
+);
+
 -- Reports Table
 CREATE TABLE reports (
     id INT PRIMARY KEY AUTO_INCREMENT,
