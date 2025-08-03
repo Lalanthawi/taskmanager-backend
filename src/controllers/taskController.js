@@ -490,12 +490,148 @@ const addTaskRating = async (req, res) => {
   }
 };
 
+const updateTask = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { id } = req.params;
+    const {
+      title,
+      description,
+      customer_name,
+      customer_phone,
+      customer_address,
+      priority,
+      scheduled_date,
+      scheduled_time_start,
+      scheduled_time_end,
+      estimated_hours,
+      materials,
+    } = req.body;
+
+    // Check if task exists
+    const [taskCheck] = await connection.query(
+      "SELECT customer_id, status FROM tasks WHERE id = ?",
+      [id]
+    );
+
+    if (taskCheck.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
+
+    // Don't allow updating completed or cancelled tasks
+    if (["Completed", "Cancelled"].includes(taskCheck[0].status)) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update ${taskCheck[0].status.toLowerCase()} tasks`,
+      });
+    }
+
+    // Update customer information
+    if (customer_name || customer_phone || customer_address) {
+      await connection.query(
+        `UPDATE customers 
+         SET name = COALESCE(?, name), 
+             phone = COALESCE(?, phone), 
+             address = COALESCE(?, address)
+         WHERE id = ?`,
+        [
+          customer_name,
+          customer_phone,
+          customer_address,
+          taskCheck[0].customer_id,
+        ]
+      );
+    }
+
+    // Update task
+    await connection.query(
+      `UPDATE tasks 
+       SET title = ?, 
+           description = ?, 
+           priority = ?, 
+           scheduled_date = ?, 
+           scheduled_time_start = ?, 
+           scheduled_time_end = ?, 
+           estimated_hours = ?
+       WHERE id = ?`,
+      [
+        title,
+        description,
+        priority,
+        scheduled_date,
+        scheduled_time_start,
+        scheduled_time_end,
+        estimated_hours,
+        id,
+      ]
+    );
+
+    // Update materials if provided
+    if (materials && Array.isArray(materials)) {
+      // Delete existing materials
+      await connection.query("DELETE FROM task_materials WHERE task_id = ?", [
+        id,
+      ]);
+
+      // Add new materials
+      if (materials.length > 0) {
+        const materialValues = materials.map((m) => [
+          id,
+          m.name || m.material_name,
+          m.quantity || 1,
+        ]);
+        await connection.query(
+          "INSERT INTO task_materials (task_id, material_name, quantity) VALUES ?",
+          [materialValues]
+        );
+      }
+    }
+
+    // Log activity
+    await connection.query(
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [req.user.id, "Task Update", `Updated task #${id}`]
+    );
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      message: "Task updated successfully",
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Update task error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error updating task",
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+// Export all controller methods (add updateTask to your exports)
 module.exports = {
   getAllTasks,
   getTaskById,
   createTask,
+  updateTask, // Add this to your exports
   assignTask,
   updateTaskStatus,
   completeTask,
   addTaskRating,
 };
+
+console.log("=== Task Controller Export Check ===");
+console.log("updateTask function exists:", typeof updateTask === "function");
+console.log("All exported methods:", Object.keys(module.exports));
+console.log("===================================");

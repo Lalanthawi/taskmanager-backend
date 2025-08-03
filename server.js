@@ -15,9 +15,18 @@ const userRoutes = require("./src/routes/userRoutes");
 const taskRoutes = require("./src/routes/taskRoutes");
 const dashboardRoutes = require("./src/routes/dashboardRoutes");
 
+console.log("Task routes type:", typeof taskRoutes);
+console.log("Task routes:", taskRoutes);
+
 // API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/tasks", taskRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+console.log("Mounting task routes at /api/tasks");
 app.use("/api/tasks", taskRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 

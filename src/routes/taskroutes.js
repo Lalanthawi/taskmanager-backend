@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+console.log("=== Task Routes Loading ===");
 const taskController = require("../controllers/taskController");
 const { authenticateToken, authorizeRoles } = require("../middleware/auth");
 const { taskValidationRules, validate } = require("../middleware/validation");
@@ -22,6 +23,14 @@ router.post(
   taskController.createTask
 );
 
+router.put(
+  "/:id",
+  authorizeRoles("Manager", "Admin"),
+  taskValidationRules(),
+  validate,
+  taskController.updateTask
+);
+
 // Assign task to electrician (Manager only)
 router.patch(
   "/:id/assign",
@@ -41,5 +50,8 @@ router.post(
 
 // Add rating to task
 router.post("/:id/rating", taskController.addTaskRating);
+
+console.log("Total routes registered:", router.stack.length);
+console.log("=========================");
 
 module.exports = router;

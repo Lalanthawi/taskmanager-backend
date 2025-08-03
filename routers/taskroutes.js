@@ -1,3 +1,4 @@
+// src/routes/taskRoutes.js (Note the capital R in taskRoutes)
 const express = require("express");
 const router = express.Router();
 const taskController = require("../controllers/taskController");
@@ -20,6 +21,15 @@ router.post(
   taskValidationRules(),
   validate,
   taskController.createTask
+);
+
+// Update task (Manager and Admin only) - ADD THIS ROUTE
+router.put(
+  "/:id",
+  authorizeRoles("Manager", "Admin"),
+  taskValidationRules(),
+  validate,
+  taskController.updateTask
 );
 
 // Assign task to electrician (Manager only)
