@@ -408,6 +408,101 @@ const getElectricians = async (req, res) => {
   }
 };
 
+// Get current user profile
+const getMyProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [users] = await db.query(
+      `SELECT u.id, u.username, u.email, u.full_name, u.phone, 
+              u.role, u.status, u.created_at, u.last_login,
+              ed.employee_code, ed.skills, ed.certifications, 
+              ed.rating, ed.total_tasks_completed, ed.join_date
+       FROM users u
+       LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
+       WHERE u.id = ?`,
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Remove sensitive data
+    const { password, ...userData } = users[0];
+
+    res.json({
+      success: true,
+      data: userData,
+    });
+  } catch (error) {
+    console.error("Get profile error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Reset user password
+const resetPassword = async (req, res) => {
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    
+    // Validate new password
+    if (!newPassword || newPassword.length < 6) {
+      await connection.rollback();
+      return res.status(400).json({ 
+        message: "New password must be at least 6 characters long" 
+      });
+    }
+    
+    // Check if user exists
+    const [user] = await connection.query(
+      "SELECT full_name, email FROM users WHERE id = ?",
+      [id]
+    );
+    
+    if (user.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(
+      newPassword,
+      parseInt(process.env.SALT_ROUNDS || 10)
+    );
+    
+    // Update the user's password
+    await connection.query(
+      "UPDATE users SET password = ? WHERE id = ?",
+      [hashedPassword, id]
+    );
+    
+    // Log activity
+    await connection.query(
+      "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+      [req.user.id, "Password Reset", `Reset password for user: ${user[0].full_name}`]
+    );
+    
+    await connection.commit();
+    
+    res.json({
+      success: true,
+      message: "Password reset successfully",
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Reset password error:", error);
+    res.status(500).json({ message: "Server error" });
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
   getAllUsers,
   getUserById,
@@ -416,4 +511,6 @@ module.exports = {
   deleteUser,
   toggleUserStatus,
   getElectricians,
+  getMyProfile,
+  resetPassword,
 };

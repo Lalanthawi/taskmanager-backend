@@ -347,10 +347,224 @@ const generateReport = async (req, res) => {
         }
         break;
 
+      case "system_usage":
+        // System usage report for admins only
+        if (userRole !== "Admin") {
+          return res
+            .status(403)
+            .json({ message: "Unauthorized to generate this report" });
+        }
+
+        try {
+          // Get user statistics
+          const [[userStats]] = await db.query(`
+            SELECT 
+              COUNT(*) as total_users,
+              SUM(CASE WHEN role = 'Admin' THEN 1 ELSE 0 END) as total_admins,
+              SUM(CASE WHEN role = 'Manager' THEN 1 ELSE 0 END) as total_managers,
+              SUM(CASE WHEN role = 'Electrician' THEN 1 ELSE 0 END) as total_electricians,
+              SUM(CASE WHEN status = 'Active' THEN 1 ELSE 0 END) as active_users,
+              SUM(CASE WHEN status = 'Inactive' THEN 1 ELSE 0 END) as inactive_users
+            FROM users
+          `);
+
+          // Get login activity for last 30 days
+          const [[loginActivity]] = await db.query(`
+            SELECT 
+              COUNT(DISTINCT user_id) as unique_logins,
+              COUNT(*) as total_logins
+            FROM activity_logs
+            WHERE action = 'Login' 
+            AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+          `);
+
+          // Get daily login stats for last 7 days
+          const [dailyLogins] = await db.query(`
+            SELECT 
+              DATE(created_at) as date,
+              COUNT(DISTINCT user_id) as unique_users,
+              COUNT(*) as login_count
+            FROM activity_logs
+            WHERE action = 'Login' 
+            AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+            GROUP BY DATE(created_at)
+            ORDER BY date DESC
+          `);
+
+          // Get account activity for last 30 days
+          const [[accountActivity]] = await db.query(`
+            SELECT 
+              SUM(CASE WHEN DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as new_registrations,
+              SUM(CASE WHEN action = 'Password Reset' AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as password_resets
+            FROM (
+              SELECT created_at, 'Registration' as action FROM users
+              UNION ALL
+              SELECT created_at, action FROM activity_logs WHERE action = 'Password Reset'
+            ) as combined_activity
+          `);
+
+          // Get current deactivated users count
+          const [[deactivatedCount]] = await db.query(`
+            SELECT COUNT(*) as deactivated_users
+            FROM users
+            WHERE status = 'Inactive'
+          `);
+
+          // Get recent login activity
+          const [recentLogins] = await db.query(`
+            SELECT 
+              u.full_name as user_name,
+              u.role,
+              al.created_at as login_time,
+              al.ip_address
+            FROM activity_logs al
+            INNER JOIN users u ON al.user_id = u.id
+            WHERE al.action = 'Login'
+            ORDER BY al.created_at DESC
+            LIMIT 10
+          `);
+
+
+          reportData = {
+            user_statistics: {
+              total: userStats.total_users || 0,
+              by_role: {
+                admins: userStats.total_admins || 0,
+                managers: userStats.total_managers || 0,
+                electricians: userStats.total_electricians || 0
+              },
+              by_status: {
+                active: userStats.active_users || 0,
+                inactive: userStats.inactive_users || 0
+              }
+            },
+            login_activity: {
+              last_30_days: {
+                unique_users: loginActivity.unique_logins || 0,
+                total_logins: loginActivity.total_logins || 0
+              },
+              daily_stats: dailyLogins || [],
+              recent_logins: recentLogins || []
+            },
+            account_activity: {
+              new_registrations: accountActivity.new_registrations || 0,
+              password_resets: accountActivity.password_resets || 0,
+              deactivated_users: deactivatedCount.deactivated_users || 0
+            },
+            report_date: new Date().toISOString()
+          };
+        } catch (err) {
+          console.error("System usage query error:", err);
+          reportData = {
+            user_statistics: {
+              total: 0,
+              by_role: { admins: 0, managers: 0, electricians: 0 },
+              by_status: { active: 0, inactive: 0 }
+            },
+            login_activity: {
+              last_30_days: { unique_users: 0, total_logins: 0 },
+              daily_stats: [],
+              recent_logins: []
+            },
+            account_activity: {
+              new_registrations: 0,
+              password_resets: 0,
+              deactivated_users: 0
+            },
+            report_date: new Date().toISOString()
+          };
+        }
+        break;
+
+      case "daily_stats":
+        // Daily statistics report for managers
+        if (userRole !== "Manager" && userRole !== "Admin") {
+          return res
+            .status(403)
+            .json({ message: "Unauthorized to generate this report" });
+        }
+
+        try {
+          // Get today's date
+          const today = new Date().toISOString().split('T')[0];
+          
+          // Get summary stats for today
+          const [[summaryStats]] = await db.query(
+            `SELECT 
+              COUNT(*) as total_tasks,
+              SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_tasks,
+              SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as in_progress_tasks,
+              SUM(CASE WHEN status IN ('Pending', 'Assigned') THEN 1 ELSE 0 END) as pending_tasks
+            FROM tasks
+            WHERE DATE(scheduled_date) = ?`,
+            [today]
+          );
+
+          // Get active electricians count
+          const [[activeElectricians]] = await db.query(
+            `SELECT COUNT(DISTINCT assigned_to) as active_electricians
+            FROM tasks
+            WHERE DATE(scheduled_date) = ? AND assigned_to IS NOT NULL`,
+            [today]
+          );
+
+          // Get electrician activity
+          const [electricianActivity] = await db.query(
+            `SELECT 
+              u.full_name as electrician_name,
+              COUNT(t.id) as total_tasks,
+              SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) as tasks_completed,
+              SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) as tasks_in_progress
+            FROM users u
+            LEFT JOIN tasks t ON u.id = t.assigned_to AND DATE(t.scheduled_date) = ?
+            WHERE u.role = 'Electrician' AND u.status = 'Active'
+            GROUP BY u.id, u.full_name
+            HAVING total_tasks > 0
+            ORDER BY tasks_completed DESC`,
+            [today]
+          );
+
+          // Get tasks by status
+          const [tasksByStatus] = await db.query(
+            `SELECT 
+              status,
+              COUNT(*) as count
+            FROM tasks
+            WHERE DATE(scheduled_date) = ?
+            GROUP BY status`,
+            [today]
+          );
+
+          reportData = {
+            summary: {
+              ...summaryStats,
+              active_electricians: activeElectricians.active_electricians || 0
+            },
+            electrician_activity: electricianActivity || [],
+            tasks_by_status: tasksByStatus || [],
+            report_date: new Date().toISOString()
+          };
+        } catch (err) {
+          console.error("Daily stats query error:", err);
+          reportData = {
+            summary: {
+              total_tasks: 0,
+              completed_tasks: 0,
+              in_progress_tasks: 0,
+              pending_tasks: 0,
+              active_electricians: 0
+            },
+            electrician_activity: [],
+            tasks_by_status: [],
+            report_date: new Date().toISOString()
+          };
+        }
+        break;
+
       default:
         return res.status(400).json({
           message:
-            "Invalid report type. Supported type: user_performance",
+            "Invalid report type. Supported types: system_usage, user_performance, daily_stats",
         });
     }
 

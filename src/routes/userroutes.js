@@ -7,6 +7,9 @@ const { userValidationRules, validate } = require("../middleware/validation");
 // All routes require authentication
 router.use(authenticateToken);
 
+// Get current user profile
+router.get("/profile", userController.getMyProfile);
+
 // Get all users (Admin and Manager only)
 router.get("/", authorizeRoles("Admin", "Manager"), userController.getAllUsers);
 
@@ -40,6 +43,13 @@ router.patch(
   "/:id/toggle-status",
   authorizeRoles("Admin"),
   userController.toggleUserStatus
+);
+
+// Reset user password (Admin only)
+router.patch(
+  "/:id/reset-password",
+  authorizeRoles("Admin"),
+  userController.resetPassword
 );
 
 module.exports = router;
