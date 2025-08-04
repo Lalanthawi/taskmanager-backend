@@ -1,31 +1,32 @@
+// auth routes - handles login and password stuff
 const express = require("express");
 const router = express.Router();
-const { body } = require("express-validator");
+const { body } = require("express-validator"); // for input validation
 const authController = require("../controllers/authController");
-const { authenticateToken } = require("../middleware/auth");
-const { validate } = require("../middleware/validation");
+const { authenticateToken } = require("../middleware/auth"); // auth middleware
+const { validate } = require("../middleware/validation"); // validation middleware
 
-// Login route
+// POST /api/auth/login - user login with validation
 router.post(
   "/login",
   [
-    body("email").isEmail().normalizeEmail(),
-    body("password").notEmpty(),
-    validate,
+    body("email").isEmail().normalizeEmail(), // make sure its a valid email
+    body("password").notEmpty(), // password cant be empty
+    validate, // run the validation middleware
   ],
-  authController.login
+  authController.login // actual login function
 );
 
-// Change password route
+// POST /api/auth/change-password - change user password (requires auth)
 router.post(
   "/change-password",
-  authenticateToken,
+  authenticateToken, // user must be logged in
   [
-    body("currentPassword").notEmpty(),
-    body("newPassword").isLength({ min: 6 }),
-    validate,
+    body("currentPassword").notEmpty(), // need current password
+    body("newPassword").isLength({ min: 6 }), // new password min 6 chars
+    validate, // validate the inputs
   ],
-  authController.changePassword
+  authController.changePassword // controller function
 );
 
 module.exports = router;

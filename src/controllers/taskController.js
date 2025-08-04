@@ -513,11 +513,12 @@ const updateTask = async (req, res) => {
       scheduled_time_end,
       estimated_hours,
       materials,
+      status,
     } = req.body;
 
     // Check if task exists
     const [taskCheck] = await connection.query(
-      "SELECT customer_id, status FROM tasks WHERE id = ?",
+      "SELECT customer_id, status, assigned_to FROM tasks WHERE id = ?",
       [id]
     );
 
@@ -555,28 +556,60 @@ const updateTask = async (req, res) => {
       );
     }
 
+    // Handle status changes and assignment logic
+    let updateQuery = `UPDATE tasks 
+                       SET title = ?, 
+                           description = ?, 
+                           priority = ?, 
+                           scheduled_date = ?, 
+                           scheduled_time_start = ?, 
+                           scheduled_time_end = ?, 
+                           estimated_hours = ?`;
+    
+    let queryParams = [
+      title,
+      description,
+      priority,
+      scheduled_date,
+      scheduled_time_start,
+      scheduled_time_end,
+      estimated_hours,
+    ];
+
+    // Handle status changes
+    if (status && status !== taskCheck[0].status) {
+      updateQuery += `, status = ?`;
+      queryParams.push(status);
+
+      // If changing to Pending, unassign the electrician
+      if (status === "Pending" && taskCheck[0].assigned_to) {
+        updateQuery += `, assigned_to = NULL`;
+        
+        // Create notification for the previously assigned electrician
+        await connection.query(
+          "INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)",
+          [
+            taskCheck[0].assigned_to,
+            "task",
+            "Task Reassignment",
+            `Task #${id} has been unassigned and is now pending reassignment`,
+          ]
+        );
+      }
+
+      // Set start/end times based on status
+      if (status === "In Progress") {
+        updateQuery += `, actual_start_time = NOW()`;
+      } else if (status === "Completed") {
+        updateQuery += `, actual_end_time = NOW()`;
+      }
+    }
+
+    updateQuery += ` WHERE id = ?`;
+    queryParams.push(id);
+
     // Update task
-    await connection.query(
-      `UPDATE tasks 
-       SET title = ?, 
-           description = ?, 
-           priority = ?, 
-           scheduled_date = ?, 
-           scheduled_time_start = ?, 
-           scheduled_time_end = ?, 
-           estimated_hours = ?
-       WHERE id = ?`,
-      [
-        title,
-        description,
-        priority,
-        scheduled_date,
-        scheduled_time_start,
-        scheduled_time_end,
-        estimated_hours,
-        id,
-      ]
-    );
+    await connection.query(updateQuery, queryParams);
 
     // Update materials if provided
     if (materials && Array.isArray(materials)) {

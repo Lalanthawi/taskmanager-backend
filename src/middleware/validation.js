@@ -25,6 +25,34 @@ const isSriLankanPhone = (value) => {
   return sriLankanPhoneRegex.test(cleanPhone);
 };
 
+// Full name validator
+const isValidFullName = (value) => {
+  if (!value || value.trim() === "") {
+    return false;
+  }
+  
+  const trimmedName = value.trim();
+  
+  // Check if full name contains only numbers
+  if (/^\d+$/.test(trimmedName)) {
+    return false;
+  }
+  
+  // Check if full name is primarily numbers (more than 70% numbers)
+  const totalChars = trimmedName.replace(/\s/g, '').length;
+  const numberChars = (trimmedName.match(/\d/g) || []).length;
+  if (totalChars > 0 && (numberChars / totalChars) > 0.7) {
+    return false;
+  }
+  
+  // Check minimum length (at least 2 characters)
+  if (trimmedName.length < 2) {
+    return false;
+  }
+  
+  return true;
+};
+
 // User validation rules
 const userValidationRules = () => {
   return [
@@ -40,7 +68,9 @@ const userValidationRules = () => {
       .notEmpty()
       .trim()
       .escape()
-      .withMessage("Full name is required"),
+      .withMessage("Full name is required")
+      .custom(isValidFullName)
+      .withMessage("Full name cannot be only numbers and must be at least 2 characters long"),
     body("phone")
       .notEmpty()
       .withMessage("Phone number is required")
