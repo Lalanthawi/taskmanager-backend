@@ -41,7 +41,7 @@ const getDashboardStats = async (req, res) => {
         ...taskCounts,
       };
     } else if (userRole === "Manager") {
-      // Manager specific stats
+      // Manager specific stats - show all tasks, not just created by manager
       const [[taskStats]] = await db.query(
         `SELECT 
           COUNT(*) as totalTasks,
@@ -49,9 +49,7 @@ const getDashboardStats = async (req, res) => {
           SUM(CASE WHEN status = 'Assigned' THEN 1 ELSE 0 END) as assignedTasks,
           SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as inProgressTasks,
           SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completedTasks
-        FROM tasks
-        WHERE created_by = ?`,
-        [userId]
+        FROM tasks`
       );
 
       const [[electricianCount]] = await db.query(
@@ -63,8 +61,7 @@ const getDashboardStats = async (req, res) => {
       const [[todayTaskCount]] = await db.query(
         `SELECT COUNT(*) as todayTasks
         FROM tasks
-        WHERE DATE(created_at) = CURDATE() AND created_by = ?`,
-        [userId]
+        WHERE DATE(created_at) = CURDATE()`
       );
 
       stats = {
@@ -72,6 +69,7 @@ const getDashboardStats = async (req, res) => {
         ...electricianCount,
         ...todayTaskCount,
       };
+
     } else if (userRole === "Electrician") {
       // Electrician specific stats
       const [[taskStats]] = await db.query(
@@ -244,13 +242,13 @@ const generateReport = async (req, res) => {
         }
 
         try {
-          // Get performance data for electricians - Fixed query
-          console.log('Executing user_performance query...');
+          // Get performance data for electricians - Last 12 months
+          console.log('Executing user_performance query for last 12 months...');
           const performanceQuery =
             `SELECT 
               u.id,
               u.full_name,
-              ed.employee_code,
+              u.employee_code,
               COUNT(t.id) as total_tasks,
               SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) as completed_tasks,
               AVG(CASE 
@@ -271,41 +269,43 @@ const generateReport = async (req, res) => {
                 ELSE 'No Ratings'
               END as performance_rating
             FROM users u
-            LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
-            LEFT JOIN tasks t ON u.id = t.assigned_to
+            LEFT JOIN tasks t ON u.id = t.assigned_to 
+              AND t.created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
             LEFT JOIN task_ratings tr ON t.id = tr.task_id
             WHERE u.role = 'Electrician' AND u.status = 'Active'
-            GROUP BY u.id, u.full_name, ed.employee_code
+            GROUP BY u.id, u.full_name, u.employee_code
             ORDER BY u.full_name`;
             
           console.log('Performance query:', performanceQuery);
           const [performance] = await db.query(performanceQuery, []);
           console.log('Performance result count:', performance.length);
 
-          // Get summary statistics - Fixed query
-          console.log('Executing summary stats query...');
+          // Get summary statistics - Last 12 months
+          console.log('Executing summary stats query for last 12 months...');
           const summaryQuery = `SELECT 
               COUNT(DISTINCT u.id) as total_electricians,
               COUNT(t.id) as total_tasks_assigned,
               SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) as total_completed,
               AVG(tr.rating) as overall_avg_rating
             FROM users u
-            LEFT JOIN tasks t ON u.id = t.assigned_to
+            LEFT JOIN tasks t ON u.id = t.assigned_to 
+              AND t.created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
             LEFT JOIN task_ratings tr ON t.id = tr.task_id
             WHERE u.role = 'Electrician' AND u.status = 'Active'`;
             
           const [[summaryStats]] = await db.query(summaryQuery);
           console.log('Summary stats:', summaryStats);
 
-          // Identify best performer
-          console.log('Executing best performer query...');
+          // Identify best performer - Last 12 months
+          console.log('Executing best performer query for last 12 months...');
           const bestPerformerQuery = `SELECT 
               u.full_name,
               COUNT(t.id) as task_count,
               AVG(tr.rating) as avg_rating,
               (COUNT(CASE WHEN t.status = 'Completed' THEN 1 END) * IFNULL(AVG(tr.rating), 1)) as performance_score
             FROM users u
-            LEFT JOIN tasks t ON u.id = t.assigned_to
+            LEFT JOIN tasks t ON u.id = t.assigned_to 
+              AND t.created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
             LEFT JOIN task_ratings tr ON t.id = tr.task_id
             WHERE u.role = 'Electrician' AND u.status = 'Active'
             GROUP BY u.id, u.full_name
@@ -326,6 +326,9 @@ const generateReport = async (req, res) => {
                 overall_avg_rating: null,
               }),
               best_performer: bestPerformer?.full_name || 'N/A',
+              report_period: 'Last 12 Months',
+              period_start: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              period_end: new Date().toISOString().split('T')[0],
             },
             report_date: new Date().toISOString(),
           };
@@ -341,6 +344,10 @@ const generateReport = async (req, res) => {
               total_tasks_assigned: 0,
               total_completed: 0,
               overall_avg_rating: null,
+              best_performer: 'N/A',
+              report_period: 'Last 12 Months',
+              period_start: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              period_end: new Date().toISOString().split('T')[0],
             },
             report_date: new Date().toISOString(),
           };

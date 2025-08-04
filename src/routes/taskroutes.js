@@ -51,6 +51,13 @@ router.post(
 // Add rating to task
 router.post("/:id/rating", taskController.addTaskRating);
 
+// Delete task (Manager and Admin only)
+router.delete(
+  "/:id",
+  authorizeRoles("Manager", "Admin"),
+  taskController.deleteTask
+);
+
 console.log("Total routes registered:", router.stack.length);
 console.log("=========================");
 

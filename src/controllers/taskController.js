@@ -12,7 +12,7 @@ const getAllTasks = async (req, res) => {
              c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
              u.full_name as assigned_electrician,
              cr.full_name as created_by_name,
-             tc.completion_notes, tc.additional_charges,
+             tc.completion_notes, tc.materials_used, tc.additional_charges, tc.completed_at,
              tr.rating, tr.feedback
       FROM tasks t
       LEFT JOIN customers c ON t.customer_id = c.id
@@ -74,10 +74,14 @@ const getTaskById = async (req, res) => {
       `SELECT t.*, 
               c.name as customer_name, c.phone as customer_phone, 
               c.address as customer_address, c.email as customer_email,
-              u.full_name as assigned_electrician, u.phone as electrician_phone
+              u.full_name as assigned_electrician, u.phone as electrician_phone,
+              tc.completion_notes, tc.materials_used, tc.additional_charges, tc.completed_at,
+              tr.rating, tr.feedback
        FROM tasks t
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN users u ON t.assigned_to = u.id
+       LEFT JOIN task_completions tc ON t.id = tc.task_id
+       LEFT JOIN task_ratings tr ON t.id = tr.task_id
        WHERE t.id = ?`,
       [id]
     );
@@ -619,16 +623,109 @@ const updateTask = async (req, res) => {
   }
 };
 
-// Export all controller methods (add updateTask to your exports)
+// Delete task
+const deleteTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userRole = req.user.role;
+
+    // Only managers and admins can delete tasks
+    if (userRole !== "Manager" && userRole !== "Admin") {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to delete tasks",
+      });
+    }
+
+    // Check if task exists
+    const [task] = await db.query("SELECT * FROM tasks WHERE id = ?", [id]);
+    
+    if (task.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
+
+    // Don't allow deletion of completed tasks
+    if (task[0].status === "Completed") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete completed tasks",
+      });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Delete related records first (to maintain referential integrity)
+      await connection.query("DELETE FROM task_ratings WHERE task_id = ?", [id]);
+      await connection.query("DELETE FROM task_completions WHERE task_id = ?", [id]);
+      await connection.query("DELETE FROM task_materials WHERE task_id = ?", [id]);
+      await connection.query("DELETE FROM issues WHERE task_id = ?", [id]);
+      
+      // Delete the task
+      const [result] = await connection.query("DELETE FROM tasks WHERE id = ?", [id]);
+
+      if (result.affectedRows === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Task not found",
+        });
+      }
+
+      // Log activity
+      await connection.query(
+        "INSERT INTO activity_logs (user_id, action, description) VALUES (?, ?, ?)",
+        [
+          req.user.id,
+          "Task Deletion",
+          `Deleted task ${task[0].task_code} - ${task[0].title}`,
+        ]
+      );
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "Task deleted successfully",
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Delete task error:", error);
+    console.error("Error details:", {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      errno: error.errno
+    });
+    
+    res.status(500).json({
+      success: false,
+      message: "Server error deleting task",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Export all controller methods
 module.exports = {
   getAllTasks,
   getTaskById,
   createTask,
-  updateTask, // Add this to your exports
+  updateTask,
   assignTask,
   updateTaskStatus,
   completeTask,
   addTaskRating,
+  deleteTask,
 };
 
 console.log("=== Task Controller Export Check ===");

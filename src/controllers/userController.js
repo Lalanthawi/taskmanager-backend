@@ -8,8 +8,8 @@ const getAllUsers = async (req, res) => {
 
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.phone, 
-             u.role, u.status, u.created_at, u.last_login,
-             ed.employee_code, ed.rating, ed.total_tasks_completed
+             u.role, u.employee_code, u.status, u.created_at, u.last_login,
+             ed.rating, ed.total_tasks_completed
       FROM users u
       LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
       WHERE 1=1
@@ -47,7 +47,9 @@ const getUserById = async (req, res) => {
     const { id } = req.params;
 
     const [users] = await db.query(
-      `SELECT u.*, ed.* 
+      `SELECT u.id, u.username, u.email, u.full_name, u.phone, 
+              u.role, u.employee_code, u.status, u.created_at, u.last_login,
+              ed.skills, ed.certifications, ed.rating, ed.total_tasks_completed, ed.join_date
        FROM users u
        LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
        WHERE u.id = ?`,
@@ -108,9 +110,9 @@ const createUser = async (req, res) => {
 
     // Insert user
     const [userResult] = await connection.query(
-      `INSERT INTO users (username, email, password, full_name, phone, role) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [username, email, hashedPassword, full_name, phone, role]
+      `INSERT INTO users (username, email, password, full_name, phone, role, employee_code) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [username, email, hashedPassword, full_name, phone, role, employee_code]
     );
 
     const userId = userResult.insertId;
@@ -389,8 +391,8 @@ const toggleUserStatus = async (req, res) => {
 const getElectricians = async (req, res) => {
   try {
     const [electricians] = await db.query(
-      `SELECT u.id, u.full_name, u.phone, u.status,
-              ed.employee_code, ed.skills, ed.rating, ed.total_tasks_completed,
+      `SELECT u.id, u.full_name, u.phone, u.employee_code, u.status,
+              ed.skills, ed.rating, ed.total_tasks_completed,
               (SELECT COUNT(*) FROM tasks WHERE assigned_to = u.id AND status = 'In Progress') as current_tasks
        FROM users u
        JOIN electrician_details ed ON u.id = ed.electrician_id
@@ -415,8 +417,8 @@ const getMyProfile = async (req, res) => {
 
     const [users] = await db.query(
       `SELECT u.id, u.username, u.email, u.full_name, u.phone, 
-              u.role, u.status, u.created_at, u.last_login,
-              ed.employee_code, ed.skills, ed.certifications, 
+              u.role, u.employee_code, u.status, u.created_at, u.last_login,
+              ed.skills, ed.certifications, 
               ed.rating, ed.total_tasks_completed, ed.join_date
        FROM users u
        LEFT JOIN electrician_details ed ON u.id = ed.electrician_id
